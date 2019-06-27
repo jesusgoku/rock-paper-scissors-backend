@@ -2,7 +2,6 @@
 
 namespace App\Http\Controllers\Api;
 
-use Illuminate\Http\Request;
 use Illuminate\Http\Response;
 
 use App\Game;
@@ -10,21 +9,22 @@ use App\Round;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\StoreGamePost;
 use App\Http\Requests\UpdateGamePost;
+use App\Services\GameService;
+use App\Exceptions\GameFinishedException;
+use Mockery\CountValidator\Exception;
 
 class GameController extends Controller
 {
+    public function __construct(GameService $gameService)
+    {
+        $this->gameService = $gameService;
+    }
+
     public function store(StoreGamePost $request)
     {
         $players = $request->input('players');
 
-        $game = new Game;
-
-        $game->player_one = $players[0];
-        $game->player_two = $players[1];
-
-        $game->save();
-        $game = Game::with('rounds')->find($game->id);
-
+        $game = $this->gameService->createGame($players);
 
         return response()->json($game, Response::HTTP_CREATED);
     }
@@ -37,7 +37,7 @@ class GameController extends Controller
      */
     public function show($id)
     {
-        $game = Game::with('rounds')->findOrFail($id);
+        $game = $this->gameService->getGame($id);
 
         return response()->json($game);
     }
@@ -46,52 +46,17 @@ class GameController extends Controller
     {
         $movements = $request->input('movements');
 
-        $game = Game::with('rounds')->findOrFail($id);
+        try {
+            $game = $this->gameService->playRound($id, $movements);
 
-        if ($game->player_winner !== null) {
-            return response()
-                ->json(['message' => 'Game is terminated'], Response::HTTP_FORBIDDEN);
+            return response()->json($game);
+        } catch (\Exception $e) {
+            if ($e instanceof GameFinishedException) {
+                return response()
+                    ->json(['message' => 'Game is terminated'], Response::HTTP_FORBIDDEN);
+            }
+
+            throw $e;
         }
-
-        $round = new Round;
-        $round->game_id = $game->id;
-        $round->player_one_move = $movements[0];
-        $round->player_two_move = $movements[1];
-        $round->player_winner = $this->getRoundWinner($movements);
-
-        $round->save();
-
-        $game->refresh();
-        $game->player_winner = $this->getGameWinner($game->rounds);
-        $game->save();
-
-        return response()->json($game);
-    }
-
-    private function getRoundWinner($movements)
-    {
-        if ($movements[0] === $movements[1]) return null;
-
-        $rules = [
-            'rock' => 'scissors',
-            'paper' => 'rock',
-            'scissors' => 'paper',
-        ];
-
-        return $rules[$movements[0]] === $movements[1] ? 0 : 1;
-    }
-
-    private function getGameWinner($rounds)
-    {
-        $summary = $rounds->reduce(function ($acc, $item) {
-            if ($item->player_winner !== null)
-                $acc[$item->player_winner] += 1;
-
-            return $acc;
-        }, [0, 0]);
-
-        $winner = collect($summary)->search(3);
-
-        return $winner === false ? null : $winner;
     }
 }
